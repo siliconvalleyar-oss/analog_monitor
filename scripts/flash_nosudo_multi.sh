@@ -15,7 +15,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.sh"
 
-BOARD="${BOARD:-pico}"
+# Si BOARD no vino del entorno ni de la config persistida (config.sh ya cargó
+# la última vía load_last_flash_config), se pide por menú y se persiste.
+if [ -z "${BOARD}" ]; then
+    pick_board "${PROJECT_DIR}"
+fi
 
 # ---------------------------------------------------------------------------
 # Detección de proyectos dentro del repositorio (carpetas con CMakeLists.txt)
@@ -181,6 +185,9 @@ echo "ELF: ${ELF_FILE}"
 echo ""
 
 run_openocd "${CONFIG_FILE}" -c "program ${ELF_FILE} verify reset exit"
+
+# Persistir BOARD + proyecto para la próxima vez (seguir sin sudo).
+save_last_flash_config "${PROJECT_DIR}"
 
 echo ""
 echo "=== Programación completa: ${PROJECT} grabado sin sudo ==="

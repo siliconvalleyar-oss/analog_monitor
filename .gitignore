@@ -18,6 +18,17 @@ compile_commands.json
 # que quedan en el working tree al alternar de rama; no son parte del firmware.
 .flutter-plugins*
 .flutter-plugins-dependencies
+# Igual gestión por si quedan dentro de un subdirectorio de proyecto (por
+# ejemplo analog_pico/ tras mover el firmware a su carpeta).
+analog_pico/.flutter-plugins*
+
+# Librería JSON copiada en scripts/ por la app Flutter host (usa nlohmann);
+# el firmware en analog_pico no la referencia.
+scripts/nlohmann/
+
+# Config local persistida por los menús de scripts/ (placa + última carpeta
+# flasheada). Es del usuario y no se versiona; escríbela con umask 077.
+scripts/.last-flash-config
 
 # La otra parte del proyecto vive en la rama 'analog_monitor_flt'
 /analog_monitor_flt/
