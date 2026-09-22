@@ -14,5 +14,10 @@ compile_commands.json
 .idea/
 *.iml
 
+# Artefactos de herramientas de la app Flutter (rama analog_monitor_flt)
+# que quedan en el working tree al alternar de rama; no son parte del firmware.
+.flutter-plugins*
+.flutter-plugins-dependencies
+
 # La otra parte del proyecto vive en la rama 'analog_monitor_flt'
 /analog_monitor_flt/
