@@ -1,99 +1,108 @@
- =============================================================================
- * CMakeLists.txt - Proyecto de medicion analogica con WiFi para Pico W
- * =============================================================================
- *
- * Proyecto: analog_monitor
- * Plataforma: Raspberry Pi Pico W (RP2040 + CYW43 WiFi)
- * Funcion: Lee voltajes analogicos (GPIO 26-28) y los sirve via TCP
- *          para ser monitoreados desde una aplicacion Flutter.
- *
- * Estructura del proyecto:
- *   src/analog/
- *   ├── CMakeLists.txt        (este archivo)
- *   ├── wifi_config.h         (credenciales WiFi del usuario)
- *   ├── main.cpp              (punto de entrada)
- *   ├── adc_reader.h          (modulo de lectura ADC - cabecera)
- *   ├── adc_reader.cpp        (modulo de lectura ADC - implementacion)
- *   ├── tcp_server.h          (servidor TCP - cabecera)
- *   └── tcp_server.cpp        (servidor TCP - implementacion)
- *
- * Prerequisitos:
- *   - Pico SDK v2.3.1 instalado en /home/bee/pico/pico-sdk/
- *   - Pico W (placa con chip CYW43 para WiFi)
- *   - ARM GCC toolchain instalado
- *
- * Para compilar:
- *   cd src/analog
- *   mkdir build && cd build
- *   cmake -DPICO_SDK_PATH=/home/bee/pico/pico-sdk ..
- *   make -j$(nproc)
- *
- * El archivo .uf2 resultante se carga en la Pico W manteniendo el boton BOOT.
- * ============================================================================= */
+# =============================================================================
+# CMakeLists.txt - Firmware Analog Pico Monitor para Raspberry Pi Pico W
+# =============================================================================
+#
+# Proyecto:   analog_monitor
+# Plataforma: Raspberry Pi Pico W (RP2040 + CYW43 WiFi)
+# Funcion:    Lee voltajes analogicos (GPIO 26-28) y los sirve via HTTP REST
+#             para la aplicacion Analog Pico Monitor (Flutter).
+#
+# API expuesta:
+#   GET /api/status   -> estado del dispositivo (IP, uptime, RSSI)
+#   GET /api/analog   -> mediciones analogicas (raw + voltaje)
+#
+# Estructura del proyecto:
+#   CMakeLists.txt    (este archivo)
+#   pico_sdk_import.cmake  (copia local del helper del SDK)
+#   wifi_config.h     (credenciales WiFi y parametros, editame)
+#   main.cpp          (punto de entrada + loop principal)
+#   adc_reader.h/.cpp (modulo de lectura ADC)
+#   http_server.h/.cpp(servidor HTTP REST sobre lwIP RAW)
+#   lwipopts.h        (opciones de lwIP: NO_SYS/poll, TCP, DHCP, SNTP)
+#
+# Como compilar (con una toolchain ARM):
+#   cmake -B build -DPICO_SDK_PATH=/ruta/a/pico-sdk
+#   cmake --build build
+#
+# Si PICO_SDK_PATH no se especifica, se busca por defecto en '../../pico-sdk'
+# (layout tipico: <proyecto>/../../pico-sdk).
+#
+# El archivo build/analog_monitor.uf2 se arrastra a la Pico W en modo BOOTSEL.
+# =============================================================================
 
 cmake_minimum_required(VERSION 3.13)
 
-# Copia del pico_sdk_import.cmake para localizar el SDK
-include(/home/bee/pico/pico-sdk/external/pico_sdk_import.cmake)
+# Placa Raspberry Pi Pico W (RP2040 + CYW43 WiFi). Sin esta opcion la pila
+# lwIP no se enlaza y los headers pico/cyw43_arch.h ni lwip/* no se incluyen.
+set(PICO_BOARD pico_w CACHE STRING "Placa Raspberry Pi Pico W")
+
+# Ruta al SDK: primero honor a PICO_SDK_PATH (env o -D), luego ruta por defecto
+if (NOT DEFINED ENV{PICO_SDK_PATH} AND NOT DEFINED PICO_SDK_PATH)
+    set(PICO_SDK_PATH "${CMAKE_CURRENT_LIST_DIR}/../pico-sdk")
+    message(STATUS "PICO_SDK_PATH no definido; usando ${PICO_SDK_PATH}")
+endif ()
+
+# Helper oficial para localizar el SDK (copia del SDK /external)
+include(pico_sdk_import.cmake)
 
 # Proyecto: lenguajes C y C++ (ASM necesario para el boot stage2 del SDK)
 project(analog_monitor C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-# Inicializar el SDK de Pico (debe ir despues de project())
+# Inicializa el SDK de Pico (debe ir despues de project())
 pico_sdk_init()
 
 # ===========================================================================
- * Ejecutable principal
- * =========================================================================== */
+# Ejecutable principal
+# ===========================================================================
 add_executable(analog_monitor
     main.cpp
     adc_reader.cpp
-    tcp_server.cpp
+    http_server.cpp
 )
 
+# Incluir el directorio del proyecto para que lwIP encuentre lwipopts.h
+target_include_directories(analog_monitor PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+
 # ===========================================================================
- * Librerias enlazadas
- * ===========================================================================
- *
- * pico_stdlib:
- *   Abstraction de nivel alto del hardware (GPIO, UART, sleep, etc.)
- *
- * hardware_adc:
- *   Driver del convertidor analogico-digital del RP2040.
- *   Permite leer los canales ADC0-ADC2 (GPIO 26-28).
- *
- * pico_cyw43_arch_lwip_poll:
- *   Integra el driver CYW43 (WiFi) con lwIP (stack TCP/IP) en modo poll.
- *   El usuario debe llamar a cyw43_arch_poll() periodicamente en el loop
- *   principal para mantener la pila de red operativa.
- *
- * pico_lwip_headers:
- *   Cabeceras de lwIP para usar la API RAW de TCP (tcp_new, tcp_bind, etc.)
- * =========================================================================== */
+# Librerias enlazadas
+# ===========================================================================
+# pico_stdlib:
+#   Abstraction de alto nivel del hardware (GPIO, UART, sleep, tiempo).
+#
+# hardware_adc:
+#   Driver del ADC del RP2040 (canales ADC0-ADC2 = GPIO 26-28).
+#
+# pico_cyw43_arch_lwip_poll:
+#   WiFi CYW43 + pila lwIP en modo poll (NO_SYS, RAW API). Requiere llamar a
+#   cyw43_arch_poll() en el loop principal.
+#
+# pico_lwip_sntp:
+#   Cliente SNTP de lwIP, usado para sincronizar la hora (epoch) y reportarla
+#   en el campo "timestamp" de /api/analog.
+# ===========================================================================
 target_link_libraries(analog_monitor
     pico_stdlib
     hardware_adc
     pico_cyw43_arch_lwip_poll
+    pico_lwip_sntp
 )
 
-# Genera archivos adicionales: .uf2 para flashear, .elf para debug, .bin, .hex
+# Genera archivos adicionales: .uf2 (flash), .elf, .bin, .hex, .dis
 pico_add_extra_outputs(analog_monitor)
 
-# Habilitar salida USB CDC (printf por USB) y UART por defecto
+# Salida de depuracion: USB CDC (printf por USB) y UART desactivado
 pico_enable_stdio_usb(analog_monitor 1)
 pico_enable_stdio_uart(analog_monitor 0)
 
 # ===========================================================================
- * Definiciones de compilacion (macros C/C++)
- * ===========================================================================
- *
- * WIFI_SSID / WIFI_PASSWORD:
- *   Se pasan desde wifi_config.h via el include en main.cpp.
- *   El usuario debe editar wifi_config.h con sus credenciales.
- *
- * TCP_PORT:
- *   Puerto en el que el Pico W escucha conexiones TCP.
- *   La app Flutter se conecta a <IP_del_pico>:<TCP_PORT>.
- * =========================================================================== */
+# Definiciones de compilacion (macros)
+# ===========================================================================
+# WIFI_SSID / WIFI_PASSWORD: se editan en wifi_config.h (no se versiona nada
+# sensible; wifi_config.h debe revisarse antes de publicar).
+#
+# HTTP_PORT: puerto del servidor HTTP (por defecto 80).
+#
+# ENABLE_SNTP / SNTP_SERVER: sincronizacion NTP para el campo "timestamp".
+# ===========================================================================
